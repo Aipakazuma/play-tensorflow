@@ -1,6 +1,4 @@
 # -*- coding:utf-8 -*-
-
-
 import os
 import gzip
 import binascii
@@ -11,7 +9,7 @@ from tensorflow.examples.tutorials.mnist import input_data
 from six.moves.urllib.request import urlretrieve
 
 
-SOURCE_UR ='http://yann.lecun.com/exdb/mnist/'
+SOURCE_URL='http://yann.lecun.com/exdb/mnist/'
 WORK_DIRECTORY="/tmp/mnist-data"
 IMAGE_SIZE=28
 PIXEL_DEPTH=255
@@ -48,7 +46,7 @@ def extract_data(filename, num_images):
         bytestream.read(16)
 
         buf = bytestream.read(IMAGE_SIZE * IMAGE_SIZE * num_images)
-        data = numpy.frombuffer(buf, dtype=numpy.uint8).astype(numpy.float32)
+        data = np.frombuffer(buf, dtype=np.uint8).astype(np.float32)
         data = (data - (PIXEL_DEPTH / 2.0)) / PIXEL_DEPTH
         data = data.reshape(num_images, IMAGE_SIZE, IMAGE_SIZE, 1)
         return data
@@ -61,9 +59,10 @@ def extract_labels(filename, num_images):
         # Skip the magic number and count; we know these values.
         bytestream.read(8)
         buf = bytestream.read(1 * num_images)
-        labels = numpy.frombuffer(buf, dtype=numpy.uint8)
+        labels = np.frombuffer(buf, dtype=np.uint8)
+
     # Convert to dense 1-hot representation.
-    return (numpy.arange(NUM_LABELS) == labels[:, None]).astype(numpy.float32)
+    return (np.arange(NUM_LABELS) == labels[:, None]).astype(np.float32)
 
 
 def processing():
@@ -92,7 +91,7 @@ def processing():
     print('Validation shape', validation_data.shape)
     print('Train size', train_size)
 
-    return train_data, train_labels, \
+    return train_size, train_data, train_labels, \
       test_data, test_labels, \
       validation_data, validation_labels
 
@@ -136,34 +135,32 @@ def weights_biases():
 
 def model(data, train=False, **parameters):
     conv = tf.nn.conv2d(data,
-        parameter.conv1_weights,
+        parameters['conv1_weights'],
         strides=[1, 1, 1, 1],
         padding='SAME')
-    relu = tf.nn.relu(conv, parameters.conv1_biases)
+    relu = tf.nn.relu(conv, parameters['conv1_biases'])
     pool = tf.nn.max_pool(relu,
         ksize=[1, 2, 2, 1],
         strides=[1, 2, 2, 1],
         padding='SAME')
     conv = tf.nn.conv2d(pool,
-        parameters.conv2_weights,
+        parameters['conv2_weights'],
         strides=[1, 1, 1, 1],
         padding='SAME')
-    relu = tf.nn.relu(tf.nn.bias_add(conv, parameters.conv2_biases))
+    relu = tf.nn.relu(tf.nn.bias_add(conv, parameters['conv2_biases']))
     pool = tf.nn.max_pool(relu,
         ksize=[1, 2, 2, 1],
         strides=[1, 2, 2, 1],
         padding='SAME')
     
     pool_shape = pool.get_shape().as_list()
-    reshape = tf.reshape(pool,
-        [pool_shape[0], pool_shape[1] * pool_shape[2] * pool_shape[3]]
-    # fully connetect layer
-    hidden = tf.nn.relu(tf.matmul(reshape, parameters.fc1_weights) + parameters.fc1_biases)
+    reshape = tf.reshape(pool, [pool_shape[0], pool_shape[1] * pool_shape[2] * pool_shape[3]])
+    hidden = tf.nn.relu(tf.matmul(reshape, parameters['fc1_weights']) + parameters['fc1_biases'])
 
     if train:
         hidden = tf.nn.dropout(hidden, 0.5, seed=SEED)
 
-    return tf.matmul(hidden, parameters.fc2_weights) + parameters.fc2_biases
+    return tf.matmul(hidden, parameters['fc2_weights']) + parameters['fc2_biases']
 
 
 def settings_model(**argument):
@@ -171,13 +168,17 @@ def settings_model(**argument):
         conv2_weights, conv2_biases, \
         fc1_weights, fc1_biases, \
         fc2_weights, fc2_biases = weights_biases()
-    logits = model(argument.train_data_node, True)
+    model_parameteres = {'conv1_weights': conv1_weights, 'conv1_biases': conv1_biases,
+                'conv2_weights': conv2_weights, 'conv2_biases': conv2_biases,
+                'fc1_weights': fc1_weights, 'fc1_biases': fc1_biases,
+                'fc2_weights': fc2_weights, 'fc2_biases': fc2_biases}
+    logits = model(argument['train_data_node'], True, **model_parameteres)
     loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
         labels=argument.train_labels_node, logits=logits))
 
     # L2 regularization
-    regularizers = (tf.nn.l2_loss(argument.fc2_weights) + tf.nn.l2_loss(argument.fc1_biases) \
-                    + tf.nn.l2_loss(argument.fc2_weigths) + tf.nn.l2_loss(argument.fc2_biases))
+    regularizers = (tf.nn.l2_loss(model_parameteres.fc2_weights) + tf.nn.l2_loss(model_parameteres.fc1_biases) \
+                    + tf.nn.l2_loss(model_parameteres.fc2_weights) + tf.nn.l2_loss(model_parameteres.fc2_biases))
     loss += 5e-4 * regularizers
 
     # Optimizer
@@ -185,7 +186,7 @@ def settings_model(**argument):
     learning_rate = tf.train.exponential_decay(
         0.01,
         batch * BATCH_SIZE,
-        train_size,
+        argument.train_size,
         0.95,
         staircase=True)
 
@@ -193,43 +194,46 @@ def settings_model(**argument):
         .minimize(loss, global_step=batch)
 
     train_prediction = tf.nn.softmax(logits)
-    validation_prediction = tf.nn.softmax(model(argument.validation_data_node))
-    test_prediction = tf.nn.softmax(model(argument.test_data_node))
+    validation_prediction = tf.nn.softmax(model(argument.validation_data_node,
+        False, **model_parameteres))
+    test_prediction = tf.nn.softmax(model(argument.test_data_node,
+        False, **model_parameteres))
 
-    return train_prediction, validation_prediction, test_prediction
+    return train_prediction, validation_prediction, test_prediction, \
+        loss, learning_rate, optimizer
 
 
 def error_rate(predictions, labels):
     """Return the error rate and confusions."""
-    correct = numpy.sum(numpy.argmax(predictions, 1) == numpy.argmax(labels, 1))
+    correct = np.sum(np.argmax(predictions, 1) == np.argmax(labels, 1))
     total = predictions.shape[0]
 
     error = 100.0 - (100 * float(correct) / float(total))
 
-    confusions = numpy.zeros([10, 10], numpy.float32)
-    bundled = zip(numpy.argmax(predictions, 1), numpy.argmax(labels, 1))
+    confusions = np.zeros([10, 10], np.float32)
+    bundled = zip(np.argmax(predictions, 1), np.argmax(labels, 1))
     for predicted, actual in bundled:
         confusions[predicted, actual] += 1
     
     return error, confusions
 
 
-def training():
+def training(**parameters):
     # Train over the first 1/4th of our training set.
     steps = train_size // BATCH_SIZE
     for step in range(steps):
         # Compute the offset of the current minibatch in the data.
         # Note that we could use better randomization across epochs.
-        offset = (step * BATCH_SIZE) % (train_size - BATCH_SIZE)
-        batch_data = train_data[offset:(offset + BATCH_SIZE), :, :, :]
-        batch_labels = train_labels[offset:(offset + BATCH_SIZE)]
+        offset = (step * BATCH_SIZE) % (parameters.train_size - BATCH_SIZE)
+        batch_data = parameters.train_data[offset:(offset + BATCH_SIZE), :, :, :]
+        batch_labels = parameters.train_labels[offset:(offset + BATCH_SIZE)]
         # This dictionary maps the batch data (as a numpy array) to the
         # node in the graph it should be fed to.
-        feed_dict = {train_data_node: batch_data,
-                     train_labels_node: batch_labels}
+        feed_dict = {'train_data_node': batch_data,
+                     'train_labels_node': batch_labels}
         # Run the graph and fetch some of the nodes.
         _, l, lr, predictions = s.run(
-          [optimizer, loss, learning_rate, train_prediction],
+          [optimizer, parameters.loss, parameters.learning_rate, parameters.train_prediction],
           feed_dict=feed_dict)
         
         # Print out the loss periodically.
@@ -238,11 +242,11 @@ def training():
             print('Step %d of %d' % (step, steps))
             print('Mini-batch loss: %.5f Error: %.5f Learning rate: %.5f' % (l, error, lr))
             print('Validation error: %.1f%%' % error_rate(
-                  validation_prediction.eval(), validation_labels)[0])
+                  parameters.validation_prediction.eval(), parameters.validation_labels)[0])
 
 
 def main():
-    train_data, train_labels,\
+    train_size, train_data, train_labels,\
     test_data, test_labels, \
     validation_data, validation_labels = processing()
 
@@ -250,7 +254,7 @@ def main():
     # 型みたいなイメージで認識
     train_data_node = tf.placeholder(
         tf.float32,
-        shape=(BATCH_SIZE, IMAGE_SIZE, NUM_CHANNELS))
+        shape=(BATCH_SIZE, IMAGE_SIZE, IMAGE_SIZE, NUM_CHANNELS))
     train_labels_node = tf.placeholder(
         tf.float32,
         shape=(BATCH_SIZE, NUM_CHANNELS))
@@ -259,30 +263,24 @@ def main():
     test_data_node = tf.constant(test_data)
 
     # model + loss
-    settings_model({'train_data_node': train_data_node, 'validation_data_node': validation_data_node,
-        'test_data_node': test_data_node, 'fc1_weights': fc1_weights, ''})
+    train_prediction, validation_prediction, \
+    test_prediction, loss, learning_rate, optimizer = \
+        settings_model(**{'train_data_node': train_data_node,
+            'validation_data_node': validation_data_node,
+            'test_data_node': test_data_node,
+            'train_size': train_size})
     
 
+    # start tf session
     s = tf.InteractiveSession()
     s.as_default()
     tf.global_variables_initializer().run()
+    training(**{'train_size': train_size,
+        'train_data': train_data, 'train_labels': train_labels,
+        'loss': loss, 'learning_rate': learning_rate,
+        'train_prediction': train_prediction, 'optimizer': optimizer,
+        'validation_data': validation_data, 'validation_labels': validation_labels})
 
-    # Grab the first BATCH_SIZE examples and labels.
-    batch_data = train_data[:BATCH_SIZE, :, :, :]
-    batch_labels = train_labels[:BATCH_SIZE]
-
-    # This dictionary maps the batch data (as a numpy array) to the
-    # node in the graph it should be fed to.
-    feed_dict = {train_data_node: batch_data,
-                 train_labels_node: batch_labels}
-
-    # Run the graph and fetch some of the nodes.
-    _, l, lr, predictions = s.run(
-      [optimizer, loss, learning_rate, train_prediction],
-      feed_dict=feed_dict)
-
-    test_error, confusions = error_rate(test_prediction.eval(), test_labels)
-    print('Test error: %.1f%%' % test_error)
 
 if __name__ == '__main__':
     main()
