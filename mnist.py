@@ -138,7 +138,7 @@ def model(data, train=False, **parameters):
         parameters['conv1_weights'],
         strides=[1, 1, 1, 1],
         padding='SAME')
-    relu = tf.nn.relu(conv, parameters['conv1_biases'])
+    relu = tf.nn.relu(tf.nn.bias_add(conv, parameters['conv1_biases']))
     pool = tf.nn.max_pool(relu,
         ksize=[1, 2, 2, 1],
         strides=[1, 2, 2, 1],
@@ -174,19 +174,19 @@ def settings_model(**argument):
                 'fc2_weights': fc2_weights, 'fc2_biases': fc2_biases}
     logits = model(argument['train_data_node'], True, **model_parameteres)
     loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
-        labels=argument.train_labels_node, logits=logits))
+        labels=argument['train_labels_node'], logits=logits))
 
     # L2 regularization
-    regularizers = (tf.nn.l2_loss(model_parameteres.fc2_weights) + tf.nn.l2_loss(model_parameteres.fc1_biases) \
-                    + tf.nn.l2_loss(model_parameteres.fc2_weights) + tf.nn.l2_loss(model_parameteres.fc2_biases))
+    regularizers = (tf.nn.l2_loss(model_parameteres['fc2_weights']) + tf.nn.l2_loss(model_parameteres['fc1_biases']) \
+                    + tf.nn.l2_loss(model_parameteres['fc2_weights']) + tf.nn.l2_loss(model_parameteres['fc2_biases']))
     loss += 5e-4 * regularizers
 
     # Optimizer
-    batch = tr.Variable(0)
+    batch = tf.Variable(0)
     learning_rate = tf.train.exponential_decay(
         0.01,
         batch * BATCH_SIZE,
-        argument.train_size,
+        argument['train_size'],
         0.95,
         staircase=True)
 
@@ -194,9 +194,9 @@ def settings_model(**argument):
         .minimize(loss, global_step=batch)
 
     train_prediction = tf.nn.softmax(logits)
-    validation_prediction = tf.nn.softmax(model(argument.validation_data_node,
+    validation_prediction = tf.nn.softmax(model(argument['validation_data_node'],
         False, **model_parameteres))
-    test_prediction = tf.nn.softmax(model(argument.test_data_node,
+    test_prediction = tf.nn.softmax(model(argument['test_data_node'],
         False, **model_parameteres))
 
     return train_prediction, validation_prediction, test_prediction, \
@@ -220,20 +220,20 @@ def error_rate(predictions, labels):
 
 def training(**parameters):
     # Train over the first 1/4th of our training set.
-    steps = train_size // BATCH_SIZE
+    steps = parameters['train_size'] // BATCH_SIZE
     for step in range(steps):
         # Compute the offset of the current minibatch in the data.
         # Note that we could use better randomization across epochs.
-        offset = (step * BATCH_SIZE) % (parameters.train_size - BATCH_SIZE)
-        batch_data = parameters.train_data[offset:(offset + BATCH_SIZE), :, :, :]
-        batch_labels = parameters.train_labels[offset:(offset + BATCH_SIZE)]
+        offset = (step * BATCH_SIZE) % (parameters['train_size'] - BATCH_SIZE)
+        batch_data = parameters['train_data'][offset:(offset + BATCH_SIZE), :, :, :]
+        batch_labels = parameters['train_labels'][offset:(offset + BATCH_SIZE)]
         # This dictionary maps the batch data (as a numpy array) to the
         # node in the graph it should be fed to.
-        feed_dict = {'train_data_node': batch_data,
-                     'train_labels_node': batch_labels}
+        feed_dict = {parameters['train_data_node']: batch_data,
+                     parameters['train_labels_node']: batch_labels}
         # Run the graph and fetch some of the nodes.
-        _, l, lr, predictions = s.run(
-          [optimizer, parameters.loss, parameters.learning_rate, parameters.train_prediction],
+        _, l, lr, predictions = parameters['s'].run(
+          [parameters['optimizer'], parameters['loss'], parameters['learning_rate'], parameters['train_prediction']],
           feed_dict=feed_dict)
         
         # Print out the loss periodically.
@@ -242,7 +242,7 @@ def training(**parameters):
             print('Step %d of %d' % (step, steps))
             print('Mini-batch loss: %.5f Error: %.5f Learning rate: %.5f' % (l, error, lr))
             print('Validation error: %.1f%%' % error_rate(
-                  parameters.validation_prediction.eval(), parameters.validation_labels)[0])
+                  parameters['validation_prediction'].eval(), parameters['validation_labels'])[0])
 
 
 def main():
@@ -257,7 +257,7 @@ def main():
         shape=(BATCH_SIZE, IMAGE_SIZE, IMAGE_SIZE, NUM_CHANNELS))
     train_labels_node = tf.placeholder(
         tf.float32,
-        shape=(BATCH_SIZE, NUM_CHANNELS))
+        shape=(BATCH_SIZE, NUM_LABELS))
 
     validation_data_node = tf.constant(validation_data)
     test_data_node = tf.constant(test_data)
@@ -266,6 +266,7 @@ def main():
     train_prediction, validation_prediction, \
     test_prediction, loss, learning_rate, optimizer = \
         settings_model(**{'train_data_node': train_data_node,
+            'train_labels_node': train_labels_node,
             'validation_data_node': validation_data_node,
             'test_data_node': test_data_node,
             'train_size': train_size})
@@ -275,10 +276,14 @@ def main():
     s = tf.InteractiveSession()
     s.as_default()
     tf.global_variables_initializer().run()
-    training(**{'train_size': train_size,
+    training(**{'s': s,
+        'train_data_node': train_data_node,
+        'train_labels_node': train_labels_node,
+        'train_size': train_size,
         'train_data': train_data, 'train_labels': train_labels,
         'loss': loss, 'learning_rate': learning_rate,
         'train_prediction': train_prediction, 'optimizer': optimizer,
+        'validation_prediction': validation_prediction,
         'validation_data': validation_data, 'validation_labels': validation_labels})
 
 
